@@ -1,0 +1,158 @@
+package com.report.service;
+
+import com.report.config.EventTableConfig;
+import com.report.model.ReportEvent;
+import com.report.model.ReportPayload;
+import com.report.model.ReportUser;
+import com.report.util.JsonUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.*;
+
+/**
+ * Service for transforming database records to API payload format
+ */
+public class DataTransformService {
+    private static final Logger logger = LoggerFactory.getLogger(DataTransformService.class);
+
+    /**
+     * Transform a database record to ReportPayload
+     *
+     * @param tableName Table name (used as event name)
+     * @param record    Database record as Map
+     * @return ReportPayload for API
+     */
+    public ReportPayload transform(String tableName, Map<String, Object> record) {
+        EventTableConfig tableConfig = EventTableConfig.getByTableName(tableName);
+        if (tableConfig == null) {
+            logger.error("Unknown table name: {}", tableName);
+            throw new IllegalArgumentException("Unknown table name: " + tableName);
+        }
+
+        ReportPayload payload = new ReportPayload();
+
+        // Set record ID and table name for tracking
+        Long recordId = getLongValue(record, "id");
+        payload.setRecordId(recordId);
+        payload.setTableName(tableName);
+
+        // Build user
+        ReportUser user = new ReportUser();
+        user.setUserUniqueId(getStringValue(record, "user_unique_id"));
+        payload.setUser(user);
+
+        // Build event
+        ReportEvent event = new ReportEvent();
+        event.setEvent(tableName);  // Table name as event name
+        event.setParams(buildParamsJson(tableConfig, record));
+        event.setLocalTimeMs(getLongValue(record, "event_time"));
+
+        // If event_time is null, use current time
+        if (event.getLocalTimeMs() == null) {
+            event.setLocalTimeMs(System.currentTimeMillis());
+        }
+
+        payload.addEvent(event);
+
+        // Header is empty by default
+        payload.setHeader(new HashMap<>());
+
+        return payload;
+    }
+
+    /**
+     * Transform multiple records
+     */
+    public List<ReportPayload> transformBatch(String tableName, List<Map<String, Object>> records) {
+        List<ReportPayload> payloads = new ArrayList<>();
+        for (Map<String, Object> record : records) {
+            try {
+                ReportPayload payload = transform(tableName, record);
+                payloads.add(payload);
+            } catch (Exception e) {
+                Long recordId = getLongValue(record, "id");
+                logger.error("Failed to transform record {} from table {}: {}",
+                        recordId, tableName, e.getMessage());
+            }
+        }
+        return payloads;
+    }
+
+    /**
+     * Build params JSON string from record fields
+     */
+    private String buildParamsJson(EventTableConfig tableConfig, Map<String, Object> record) {
+        Map<String, Object> params = new LinkedHashMap<>();
+
+        for (String field : tableConfig.getParamFields()) {
+            Object value = record.get(field);
+            if (value != null) {
+                params.put(field, value);
+            }
+        }
+
+        return JsonUtil.toJson(params);
+    }
+
+    /**
+     * Get string value from record
+     */
+    private String getStringValue(Map<String, Object> record, String key) {
+        Object value = record.get(key);
+        if (value == null) {
+            return null;
+        }
+        return value.toString();
+    }
+
+    /**
+     * Get long value from record
+     */
+    private Long getLongValue(Map<String, Object> record, String key) {
+        Object value = record.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Long) {
+            return (Long) value;
+        }
+        if (value instanceof Integer) {
+            return ((Integer) value).longValue();
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        try {
+            return Long.parseLong(value.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Extract record IDs from payloads
+     */
+    public List<Long> extractRecordIds(List<ReportPayload> payloads) {
+        List<Long> ids = new ArrayList<>();
+        for (ReportPayload payload : payloads) {
+            if (payload.getRecordId() != null) {
+                ids.add(payload.getRecordId());
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * Get the maximum record ID from a batch
+     */
+    public long getMaxRecordId(List<ReportPayload> payloads) {
+        long maxId = 0;
+        for (ReportPayload payload : payloads) {
+            if (payload.getRecordId() != null && payload.getRecordId() > maxId) {
+                maxId = payload.getRecordId();
+            }
+        }
+        return maxId;
+    }
+}
