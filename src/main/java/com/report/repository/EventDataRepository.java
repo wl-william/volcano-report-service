@@ -242,6 +242,100 @@ public class EventDataRepository {
         return records;
     }
 
+    /**
+     * Query records by date partition with LIMIT/OFFSET (for Hive partitioned tables)
+     *
+     * @param tableName Table name
+     * @param dt        Date partition (e.g., "2026-01-26")
+     * @param limit     Batch size
+     * @param offset    Offset for pagination
+     * @return List of records
+     */
+    public List<Map<String, Object>> queryWithOffset(String tableName, String dt, int limit, int offset) {
+        EventTableConfig tableConfig = EventTableConfig.getByTableName(tableName);
+        if (tableConfig == null) {
+            logger.error("Unknown table name: {}", tableName);
+            return Collections.emptyList();
+        }
+
+        String sql = String.format(
+                "SELECT %s FROM %s WHERE dt = ? LIMIT ? OFFSET ?",
+                tableConfig.buildSelectFields(),
+                tableName
+        );
+
+        List<Map<String, Object>> records = new ArrayList<>();
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, dt);
+            stmt.setInt(2, limit);
+            stmt.setInt(3, offset);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+
+                while (rs.next()) {
+                    Map<String, Object> record = new HashMap<>();
+                    for (int i = 1; i <= columnCount; i++) {
+                        String columnName = metaData.getColumnName(i);
+                        Object value = rs.getObject(i);
+                        record.put(columnName, value);
+                    }
+                    records.add(record);
+                }
+            }
+
+            logger.debug("Fetched {} records from {} (dt={}, offset={}, limit={})",
+                    records.size(), tableName, dt, offset, limit);
+
+        } catch (SQLException e) {
+            logger.error("Failed to query records from {} (dt={}): {}", tableName, dt, e.getMessage(), e);
+            throw new RuntimeException("Database query failed", e);
+        }
+
+        return records;
+    }
+
+    /**
+     * Count records in a date partition (for Hive partitioned tables)
+     *
+     * @param tableName Table name
+     * @param dt        Date partition (e.g., "2026-01-26")
+     * @return Record count
+     */
+    public long count(String tableName, String dt) {
+        EventTableConfig tableConfig = EventTableConfig.getByTableName(tableName);
+        if (tableConfig == null) {
+            logger.error("Unknown table name: {}", tableName);
+            return 0;
+        }
+
+        String sql = String.format(
+                "SELECT COUNT(*) FROM %s WHERE dt = ?",
+                tableName
+        );
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, dt);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getLong(1);
+                }
+            }
+
+        } catch (SQLException e) {
+            logger.error("Failed to count records from {} (dt={}): {}", tableName, dt, e.getMessage(), e);
+        }
+
+        return 0;
+    }
+
     private String truncate(String str, int maxLength) {
         if (str == null) return null;
         return str.length() > maxLength ? str.substring(0, maxLength) : str;

@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Quartz scheduler configuration
+ * Schedules daily processing of yesterday's data at 2am
  */
 public class ScheduleConfig {
     private static final Logger logger = LoggerFactory.getLogger(ScheduleConfig.class);
@@ -30,52 +31,33 @@ public class ScheduleConfig {
 
         scheduler = StdSchedulerFactory.getDefaultScheduler();
 
-        // Schedule increment report job
-        scheduleIncrementJob();
-
-        // Schedule retry job
-        scheduleRetryJob();
+        // Schedule yesterday report job (runs daily at 2am)
+        scheduleYesterdayJob();
 
         scheduler.start();
         logger.info("Scheduler started");
     }
 
     /**
-     * Schedule the increment report job
+     * Schedule the yesterday report job
+     * Processes yesterday's data daily
      */
-    private void scheduleIncrementJob() throws SchedulerException {
-        JobDetail job = JobBuilder.newJob(IncrementReportJob.class)
-                .withIdentity("incrementReportJob", "reportGroup")
-                .withDescription("Incremental data report job")
+    private void scheduleYesterdayJob() throws SchedulerException {
+        JobDetail job = JobBuilder.newJob(YesterdayReportJob.class)
+                .withIdentity("yesterdayReportJob", "reportGroup")
+                .withDescription("Daily job to process yesterday's data")
                 .build();
 
+        // Use increment cron from config (default: 2am daily)
         CronTrigger trigger = TriggerBuilder.newTrigger()
-                .withIdentity("incrementTrigger", "reportGroup")
+                .withIdentity("yesterdayTrigger", "reportGroup")
                 .withSchedule(CronScheduleBuilder.cronSchedule(config.getIncrementCron())
                         .withMisfireHandlingInstructionDoNothing())
                 .build();
 
         scheduler.scheduleJob(job, trigger);
-        logger.info("Increment report job scheduled with cron: {}", config.getIncrementCron());
-    }
-
-    /**
-     * Schedule the retry job for failed records
-     */
-    private void scheduleRetryJob() throws SchedulerException {
-        JobDetail job = JobBuilder.newJob(RetryReportJob.class)
-                .withIdentity("retryReportJob", "reportGroup")
-                .withDescription("Retry failed records job")
-                .build();
-
-        CronTrigger trigger = TriggerBuilder.newTrigger()
-                .withIdentity("retryTrigger", "reportGroup")
-                .withSchedule(CronScheduleBuilder.cronSchedule(config.getRetryCron())
-                        .withMisfireHandlingInstructionDoNothing())
-                .build();
-
-        scheduler.scheduleJob(job, trigger);
-        logger.info("Retry report job scheduled with cron: {}", config.getRetryCron());
+        logger.info("Yesterday report job scheduled with cron: {}", config.getIncrementCron());
+        logger.info("Job will process previous day's data daily");
     }
 
     /**
@@ -93,22 +75,12 @@ public class ScheduleConfig {
     }
 
     /**
-     * Trigger increment job immediately
+     * Trigger yesterday job immediately
      */
-    public void triggerIncrementJob() throws SchedulerException {
+    public void triggerYesterdayJob() throws SchedulerException {
         if (scheduler != null) {
-            scheduler.triggerJob(JobKey.jobKey("incrementReportJob", "reportGroup"));
-            logger.info("Increment job triggered manually");
-        }
-    }
-
-    /**
-     * Trigger retry job immediately
-     */
-    public void triggerRetryJob() throws SchedulerException {
-        if (scheduler != null) {
-            scheduler.triggerJob(JobKey.jobKey("retryReportJob", "reportGroup"));
-            logger.info("Retry job triggered manually");
+            scheduler.triggerJob(JobKey.jobKey("yesterdayReportJob", "reportGroup"));
+            logger.info("Yesterday job triggered manually");
         }
     }
 

@@ -3,21 +3,22 @@ package com.report.service;
 import com.report.config.AppConfig;
 import com.report.model.ReportPayload;
 import com.report.model.ReportResult;
-import com.report.model.TaskProgress;
-import com.report.model.TaskProgress.TaskType;
+import com.report.repository.EventDataRepository;
 import com.report.util.HttpClientUtil;
 import com.report.util.JsonUtil;
 import com.report.util.LogSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Main service for reporting events to Volcano Engine
+ * Stateless date-based processing for Hive partitioned tables
  */
 public class ReportService {
     private static final Logger logger = LoggerFactory.getLogger(ReportService.class);
@@ -25,19 +26,185 @@ public class ReportService {
 
     private static final String SINGLE_ENDPOINT = "/v2/event/json";
     private static final String BATCH_ENDPOINT = "/v2/event/list";
+    private static final int BATCH_SIZE = 1000;
+    private static final int MAX_RETRIES = 3;
+    private static final long RETRY_DELAY_MS = 1000;
 
     private final AppConfig config;
     private final HttpClientUtil httpClient;
-    private final DataFetchService dataFetchService;
+    private final EventDataRepository dataRepository;
     private final DataTransformService transformService;
-    private final TaskProgressService progressService;
 
     public ReportService() {
         this.config = AppConfig.getInstance();
         this.httpClient = HttpClientUtil.getInstance();
-        this.dataFetchService = new DataFetchService();
+        this.dataRepository = new EventDataRepository();
         this.transformService = new DataTransformService();
-        this.progressService = new TaskProgressService();
+    }
+
+    /**
+     * Process all tables for a specific date
+     *
+     * @param dt Date partition (e.g., "2026-01-26")
+     */
+    public void processDate(String dt) {
+        logger.info("========== Starting date-based report task ==========");
+        logger.info("Processing date: {}", dt);
+
+        int totalSuccess = 0;
+        int totalFail = 0;
+        int totalRecords = 0;
+
+        for (String tableName : config.getEventTables()) {
+            logger.info("Processing table: {}", tableName);
+
+            try {
+                TableResult result = processTable(tableName, dt);
+                totalRecords += result.totalRecords;
+                totalSuccess += result.successCount;
+                totalFail += result.failCount;
+
+                logger.info("Table {} completed: total={}, success={}, fail={}",
+                        tableName, result.totalRecords, result.successCount, result.failCount);
+
+            } catch (Exception e) {
+                logger.error("Failed to process table {}: {}", tableName, e.getMessage(), e);
+                totalFail++;
+            }
+        }
+
+        logger.info("========== Date-based report completed ==========");
+        logger.info("Summary: total={}, success={}, fail={}", totalRecords, totalSuccess, totalFail);
+    }
+
+    /**
+     * Process a single table for a specific date
+     *
+     * @param tableName Table name
+     * @param dt        Date partition
+     * @return Processing result
+     */
+    private TableResult processTable(String tableName, String dt) {
+        long totalCount = dataRepository.count(tableName, dt);
+        logger.info("Total records in {} (dt={}): {}", tableName, dt, totalCount);
+
+        if (totalCount == 0) {
+            return new TableResult(0, 0, 0);
+        }
+
+        int successCount = 0;
+        int failCount = 0;
+        int offset = 0;
+
+        while (offset < totalCount) {
+            // Fetch batch with pagination
+            List<Map<String, Object>> records = dataRepository.queryWithOffset(
+                    tableName, dt, BATCH_SIZE, offset);
+
+            if (records.isEmpty()) {
+                break;
+            }
+
+            logger.info("Processing batch: table={}, dt={}, offset={}, size={}",
+                    tableName, dt, offset, records.size());
+
+            // Process each record with retry
+            for (Map<String, Object> record : records) {
+                boolean success = processRecordWithRetry(tableName, dt, record);
+                if (success) {
+                    successCount++;
+                } else {
+                    failCount++;
+                }
+            }
+
+            offset += records.size();
+            logger.info("Batch completed: offset={}, success={}, fail={}", offset, successCount, failCount);
+        }
+
+        return new TableResult((int) totalCount, successCount, failCount);
+    }
+
+    /**
+     * Process a single record with retry logic
+     *
+     * @param tableName Table name
+     * @param dt        Date partition
+     * @param record    Record data
+     * @return true if successful, false otherwise
+     */
+    private boolean processRecordWithRetry(String tableName, String dt, Map<String, Object> record) {
+        // Transform to payload
+        ReportPayload payload;
+        try {
+            payload = transformService.transform(tableName, record);
+        } catch (Exception e) {
+            logger.error("Failed to transform record from table {}: {}", tableName, e.getMessage());
+            logFailedRecord(tableName, dt, record, "Transform failed: " + e.getMessage());
+            return false;
+        }
+
+        // Retry up to MAX_RETRIES times
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                ReportResult result = reportSingle(payload);
+
+                if (result.isSuccess()) {
+                    if (attempt > 1) {
+                        logger.info("Record reported successfully on attempt {}: table={}, user={}",
+                                attempt, tableName,
+                                LogSanitizer.sanitizeUserId(payload.getUser().getUserUniqueId()));
+                    }
+                    return true;
+                }
+
+                logger.warn("Report attempt {} failed for table {}: {}",
+                        attempt, tableName, result.getErrorMessage());
+
+                // Wait before retry
+                if (attempt < MAX_RETRIES) {
+                    Thread.sleep(RETRY_DELAY_MS);
+                }
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.error("Retry interrupted for table {}", tableName);
+                logFailedRecord(tableName, dt, record, "Retry interrupted");
+                return false;
+            } catch (Exception e) {
+                logger.error("Unexpected error on attempt {} for table {}: {}",
+                        attempt, tableName, e.getMessage());
+
+                if (attempt < MAX_RETRIES) {
+                    try {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        logFailedRecord(tableName, dt, record, "Retry interrupted: " + e.getMessage());
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // All retries failed
+        logFailedRecord(tableName, dt, record, "Max retries exceeded");
+        return false;
+    }
+
+    /**
+     * Log failed record for manual review
+     */
+    private void logFailedRecord(String tableName, String dt, Map<String, Object> record, String reason) {
+        String userUniqueId = record.get("user_unique_id") != null
+                ? record.get("user_unique_id").toString()
+                : "unknown";
+
+        failedLogger.error("FAILED: table={}, dt={}, user={}, reason={}, record={}",
+                tableName, dt,
+                LogSanitizer.sanitizeUserId(userUniqueId),
+                reason,
+                JsonUtil.toJson(record));
     }
 
     /**
@@ -66,212 +233,53 @@ public class ReportService {
     }
 
     /**
-     * Execute full report for all tables
+     * Show statistics for a specific date
+     *
+     * @param dt Date partition (e.g., "2026-01-26")
      */
-    public void executeFullReport() {
-        logger.info("========== Starting full report task ==========");
+    public void showStats(String dt) {
+        logger.info("========== Statistics for date: {} ==========", dt);
 
-        Map<String, Long> pendingCounts = dataFetchService.getAllPendingCounts();
-        long totalPending = pendingCounts.values().stream().mapToLong(Long::longValue).sum();
+        long totalRecords = 0;
 
-        if (totalPending == 0) {
-            logger.info("No pending records to report");
-            return;
-        }
-
-        logger.info("Total pending records: {}", totalPending);
-
-        // Process each table
-        for (String tableName : config.getEventTables()) {
-            Long count = pendingCounts.get(tableName);
-            if (count != null && count > 0) {
-                processTable(tableName);
-            }
-        }
-
-        logger.info("========== Full report task completed ==========");
-    }
-
-    /**
-     * Process a single table with checkpoint support
-     */
-    public void processTable(String tableName) {
-        logger.info("Processing table: {}", tableName);
-
-        // Check for existing running task (resume)
-        TaskProgress progress = progressService.findOrCreateTask(tableName, TaskType.INCR);
-        long lastProcessedId = progress.getLastProcessedId();
-
-        logger.info("Task {} started for table {} (resuming from id={})",
-                progress.getTaskId(), tableName, lastProcessedId);
-
-        try {
-            while (true) {
-                // Fetch batch
-                List<Map<String, Object>> records = dataFetchService.fetchBatch(tableName, lastProcessedId);
-
-                if (records.isEmpty()) {
-                    logger.info("No more records for table {}", tableName);
-                    break;
-                }
-
-                logger.info("Fetched {} records from table {} (after id={})",
-                        records.size(), tableName, lastProcessedId);
-
-                // Transform to payloads
-                List<ReportPayload> payloads = transformService.transformBatch(tableName, records);
-                List<Long> recordIds = transformService.extractRecordIds(payloads);
-
-                // Mark as processing
-                dataFetchService.markAsProcessing(tableName, recordIds);
-
-                // Report in batches
-                int batchSize = config.getReportBatchSize();
-                int successCount = 0;
-                int failCount = 0;
-
-                for (int i = 0; i < payloads.size(); i += batchSize) {
-                    int end = Math.min(i + batchSize, payloads.size());
-                    List<ReportPayload> batch = payloads.subList(i, end);
-                    List<Long> batchIds = transformService.extractRecordIds(batch);
-
-                    ReportResult result = reportBatchWithRetry(batch);
-
-                    if (result.isSuccess()) {
-                        dataFetchService.markAsSuccess(tableName, batchIds);
-                        successCount += batchIds.size();
-                    } else {
-                        handleFailedBatch(tableName, batch, result.getErrorMessage());
-                        failCount += batchIds.size();
-                    }
-                }
-
-                // Update progress
-                lastProcessedId = transformService.getMaxRecordId(payloads);
-                progress.setLastProcessedId(lastProcessedId);
-                progress.incrementProcessed(records.size());
-                progress.incrementSuccess(successCount);
-                progress.incrementFail(failCount);
-                progressService.updateProgress(progress);
-
-                logger.info("Batch completed: success={}, fail={}, lastId={}",
-                        successCount, failCount, lastProcessedId);
-            }
-
-            // Complete task
-            progressService.completeTask(progress);
-            logger.info("Table {} processing completed: success={}, fail={}",
-                    tableName, progress.getSuccessCount(), progress.getFailCount());
-
-        } catch (Exception e) {
-            logger.error("Error processing table {}: {}", tableName, e.getMessage(), e);
-            progressService.failTask(progress);
-            throw new RuntimeException("Table processing failed: " + tableName, e);
-        }
-    }
-
-    /**
-     * Report batch with retry
-     * Note: Uses synchronous retry with Thread.sleep for simplicity in batch processing context.
-     * For high-concurrency scenarios, consider using ScheduledExecutorService or reactive patterns.
-     */
-    private ReportResult reportBatchWithRetry(List<ReportPayload> payloads) {
-        int maxRetries = config.getMaxRetryTimes();
-        long retryInterval = config.getRetryIntervalMs();
-
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            ReportResult result = reportBatch(payloads);
-
-            if (result.isSuccess()) {
-                return result;
-            }
-
-            if (attempt < maxRetries) {
-                logger.warn("Report attempt {} failed, retrying in {}ms: {}",
-                        attempt, retryInterval, result.getErrorMessage());
-                try {
-                    // Synchronous sleep is acceptable here as this is batch processing
-                    // and we want to avoid overwhelming the API with rapid retries
-                    Thread.sleep(retryInterval);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    logger.warn("Retry interrupted, returning last result");
-                    return result;
-                }
-            }
-        }
-
-        logger.error("All {} report attempts failed", maxRetries);
-        return ReportResult.failure(0, "Max retries exceeded");
-    }
-
-    /**
-     * Handle failed batch - log and mark as failed
-     */
-    private void handleFailedBatch(String tableName, List<ReportPayload> payloads, String errorMessage) {
-        for (ReportPayload payload : payloads) {
-            Long recordId = payload.getRecordId();
-            dataFetchService.markAsFailed(tableName, recordId, errorMessage);
-
-            // Log to failed records file (sanitize user ID for privacy)
-            failedLogger.info("table={}, id={}, user={}, error={}",
-                    tableName, recordId,
-                    LogSanitizer.sanitizeUserId(payload.getUser().getUserUniqueId()),
-                    errorMessage);
-        }
-    }
-
-    /**
-     * Retry failed records for all tables
-     */
-    public void retryFailedRecords() {
-        logger.info("Starting retry of failed records");
+        System.out.println("\n========== Statistics for " + dt + " ==========");
 
         for (String tableName : config.getEventTables()) {
-            retryFailedRecordsForTable(tableName);
+            long count = dataRepository.count(tableName, dt);
+            totalRecords += count;
+
+            System.out.printf("  %-20s : %d%n", tableName, count);
+            logger.info("Table {}: {} records", tableName, count);
         }
 
-        logger.info("Retry of failed records completed");
+        System.out.println("------------------------------------------------");
+        System.out.printf("  %-20s : %d%n", "TOTAL", totalRecords);
+        System.out.println("================================================\n");
+
+        logger.info("Total records for {}: {}", dt, totalRecords);
     }
 
     /**
-     * Retry failed records for a specific table
+     * Get yesterday's date in format YYYY-MM-DD
      */
-    private void retryFailedRecordsForTable(String tableName) {
-        List<Map<String, Object>> failedRecords =
-                dataFetchService.fetchFailedRecords(tableName, config.getDbBatchSize());
-
-        if (failedRecords.isEmpty()) {
-            return;
-        }
-
-        logger.info("Retrying {} failed records for table {}", failedRecords.size(), tableName);
-
-        List<ReportPayload> payloads = transformService.transformBatch(tableName, failedRecords);
-
-        int batchSize = config.getReportBatchSize();
-        for (int i = 0; i < payloads.size(); i += batchSize) {
-            int end = Math.min(i + batchSize, payloads.size());
-            List<ReportPayload> batch = payloads.subList(i, end);
-            List<Long> batchIds = transformService.extractRecordIds(batch);
-
-            ReportResult result = reportBatch(batch);
-
-            if (result.isSuccess()) {
-                dataFetchService.markAsSuccess(tableName, batchIds);
-                logger.info("Retry success for {} records in table {}", batchIds.size(), tableName);
-            } else {
-                for (ReportPayload payload : batch) {
-                    dataFetchService.markAsFailed(tableName, payload.getRecordId(), result.getErrorMessage());
-                }
-            }
-        }
+    public static String getYesterdayDate() {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+        long yesterday = System.currentTimeMillis() - 24 * 60 * 60 * 1000;
+        return sdf.format(new Date(yesterday));
     }
 
     /**
-     * Get report statistics
+     * Result of processing a single table
      */
-    public Map<String, Long> getStatistics() {
-        return dataFetchService.getAllPendingCounts();
+    private static class TableResult {
+        final int totalRecords;
+        final int successCount;
+        final int failCount;
+
+        TableResult(int totalRecords, int successCount, int failCount) {
+            this.totalRecords = totalRecords;
+            this.successCount = successCount;
+            this.failCount = failCount;
+        }
     }
 }

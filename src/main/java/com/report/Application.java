@@ -4,12 +4,9 @@ import com.report.config.AppConfig;
 import com.report.config.DataSourceConfig;
 import com.report.schedule.ScheduleConfig;
 import com.report.service.ReportService;
-import com.report.service.TaskProgressService;
 import com.report.util.HttpClientUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.Map;
 
 /**
  * Main application entry point for Volcano Report Service
@@ -49,27 +46,24 @@ public class Application {
             logger.info("Database connection OK");
             System.out.println("[STARTUP] Database connection OK");
 
-            // Initialize task progress table
-            TaskProgressService progressService = new TaskProgressService();
-            progressService.initTable();
-
             // Parse command line arguments
             String mode = args.length > 0 ? args[0] : "schedule";
+            String date = args.length > 1 ? args[1] : ReportService.getYesterdayDate();
 
             switch (mode.toLowerCase()) {
                 case "once":
-                    // Run once and exit
-                    runOnce();
+                    // Run once for specified date and exit
+                    runOnce(date);
                     break;
 
                 case "retry":
-                    // Retry failed records only
-                    runRetry();
+                    // Retry mode - reprocess specified date (for manual rerun)
+                    runRetry(date);
                     break;
 
                 case "stats":
-                    // Show statistics only
-                    showStats();
+                    // Show statistics for specified date
+                    showStats(date);
                     break;
 
                 case "schedule":
@@ -94,51 +88,41 @@ public class Application {
     }
 
     /**
-     * Run report once and exit
+     * Run report once for specified date and exit
      */
-    private static void runOnce() {
-        logger.info("Running in ONCE mode");
+    private static void runOnce(String date) {
+        logger.info("Running in ONCE mode for date: {}", date);
         try {
             ReportService reportService = new ReportService();
-            reportService.executeFullReport();
-            logger.info("Report completed, exiting");
+            reportService.processDate(date);
+            logger.info("Report completed for {}, exiting", date);
         } finally {
             cleanup();
         }
     }
 
     /**
-     * Run retry only
+     * Retry/reprocess specified date (for manual rerun)
      */
-    private static void runRetry() {
-        logger.info("Running in RETRY mode");
+    private static void runRetry(String date) {
+        logger.info("Running in RETRY mode for date: {}", date);
         try {
             ReportService reportService = new ReportService();
-            reportService.retryFailedRecords();
-            logger.info("Retry completed, exiting");
+            reportService.processDate(date);
+            logger.info("Retry completed for {}, exiting", date);
         } finally {
             cleanup();
         }
     }
 
     /**
-     * Show statistics only
+     * Show statistics for specified date
      */
-    private static void showStats() {
-        logger.info("Running in STATS mode");
+    private static void showStats(String date) {
+        logger.info("Running in STATS mode for date: {}", date);
         try {
             ReportService reportService = new ReportService();
-            Map<String, Long> stats = reportService.getStatistics();
-
-            System.out.println("\n========== Pending Records Statistics ==========");
-            long total = 0;
-            for (Map.Entry<String, Long> entry : stats.entrySet()) {
-                System.out.printf("  %-20s : %d%n", entry.getKey(), entry.getValue());
-                total += entry.getValue();
-            }
-            System.out.println("------------------------------------------------");
-            System.out.printf("  %-20s : %d%n", "TOTAL", total);
-            System.out.println("================================================\n");
+            reportService.showStats(date);
         } finally {
             cleanup();
         }
@@ -229,12 +213,21 @@ public class Application {
      * Print usage information
      */
     private static void printUsage() {
-        System.out.println("Usage: java -jar volcano-report-service.jar [mode]");
+        System.out.println("Usage: java -jar volcano-report-service.jar [mode] [date]");
         System.out.println();
         System.out.println("Modes:");
-        System.out.println("  schedule  - Start with scheduler (default)");
-        System.out.println("  once      - Run report once and exit");
-        System.out.println("  retry     - Retry failed records and exit");
-        System.out.println("  stats     - Show statistics and exit");
+        System.out.println("  schedule  - Start with scheduler (process yesterday daily, default)");
+        System.out.println("  once      - Process specified date once and exit (default: yesterday)");
+        System.out.println("  retry     - Reprocess specified date (default: yesterday)");
+        System.out.println("  stats     - Show statistics for specified date (default: yesterday)");
+        System.out.println();
+        System.out.println("Date format: YYYY-MM-DD (e.g., 2026-01-25)");
+        System.out.println("If date is not provided, defaults to yesterday");
+        System.out.println();
+        System.out.println("Examples:");
+        System.out.println("  java -jar app.jar stats              # Show stats for yesterday");
+        System.out.println("  java -jar app.jar stats 2026-01-20   # Show stats for specific date");
+        System.out.println("  java -jar app.jar once 2026-01-20    # Process specific date once");
+        System.out.println("  java -jar app.jar schedule           # Run scheduler (process yesterday daily)");
     }
 }

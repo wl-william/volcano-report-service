@@ -111,7 +111,7 @@ public class AppConfig {
 
         // Schedule
         scheduleEnabled = getBooleanProperty("schedule.enabled", true);
-        incrementCron = getProperty("schedule.increment.cron", "0 */5 * * * ?");
+        incrementCron = getProperty("schedule.increment.cron", "0 0 2 * * ?");  // Daily at 2am
         retryCron = getProperty("schedule.retry.cron", "0 */30 * * * ?");
 
         // Event tables
