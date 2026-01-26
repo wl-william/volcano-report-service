@@ -20,22 +20,34 @@ public class Application {
     private static ScheduleConfig scheduleConfig;
 
     public static void main(String[] args) {
+        // Console output for debugging (in case logger fails)
+        System.out.println("========================================");
+        System.out.println("  Volcano Report Service Starting...");
+        System.out.println("  Java Version: " + System.getProperty("java.version"));
+        System.out.println("  Working Directory: " + System.getProperty("user.dir"));
+        System.out.println("========================================");
+
         logger.info("========================================");
         logger.info("  Volcano Report Service Starting...");
         logger.info("========================================");
 
         try {
             // Initialize configuration
+            System.out.println("[STARTUP] Loading configuration...");
             AppConfig config = AppConfig.getInstance();
             logger.info("Configuration loaded");
+            System.out.println("[STARTUP] Configuration loaded successfully");
 
             // Test database connection with retry
+            System.out.println("[STARTUP] Testing database connection...");
             DataSourceConfig dataSource = DataSourceConfig.getInstance();
             if (!testDatabaseConnectionWithRetry(dataSource, 3, 5000)) {
+                System.err.println("[ERROR] Database connection failed after retries!");
                 logger.error("Database connection failed after retries!");
                 System.exit(1);
             }
             logger.info("Database connection OK");
+            System.out.println("[STARTUP] Database connection OK");
 
             // Initialize task progress table
             TaskProgressService progressService = new TaskProgressService();
@@ -68,6 +80,14 @@ public class Application {
             }
 
         } catch (Exception e) {
+            // Print to console for debugging
+            System.err.println("========================================");
+            System.err.println("  APPLICATION STARTUP FAILED!");
+            System.err.println("  Error: " + e.getMessage());
+            System.err.println("========================================");
+            e.printStackTrace(System.err);
+
+            // Also log if possible
             logger.error("Application failed to start: {}", e.getMessage(), e);
             System.exit(1);
         }
