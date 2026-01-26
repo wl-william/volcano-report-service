@@ -7,28 +7,34 @@ import java.util.Map;
 
 /**
  * Event table configuration
- * Maps table names to their parameter fields for JSON conversion
+ * Maps table names to their parameter fields and report mode
  */
 public enum EventTableConfig {
-    PAGE_VIEW("page_vidw", Arrays.asList("refer_page_id", "page_id")),
+    // Default: BATCH mode for high-volume tables
+    PAGE_VIEW("page_vidw", Arrays.asList("refer_page_id", "page_id"), ReportMode.BATCH),
 
-    ELEMENT_CLICK("element_click", Arrays.asList("click_type", "click_position", "click_name", "click_area")),
+    ELEMENT_CLICK("element_click", Arrays.asList("click_type", "click_position", "click_name", "click_area"), ReportMode.BATCH),
 
-    PAY("pay", Arrays.asList("pay_type", "pay_amount", "package_type", "package_id", "package_name", "is_ai")),
+    // SINGLE mode for critical payment events (more reliable)
+    PAY("pay", Arrays.asList("pay_type", "pay_amount", "package_type", "package_id", "package_name", "is_ai"), ReportMode.SINGLE),
 
     PAY_RESULT("pay_result", Arrays.asList(
             "pay_result", "pay_type", "pay_amount", "package_type", "package_id", "package_name",
             "is_ai", "source", "device", "device_type", "sale_channel", "sd_card",
             "device_first_time", "cloud_expire_time"
-    )),
+    ), ReportMode.SINGLE),
 
-    USER_INFO("user_info", Arrays.asList("reg_time", "ys_dev_cnt", "user_add_day"));
+    USER_INFO("user_info", Arrays.asList("reg_time", "ys_dev_cnt", "user_add_day"), ReportMode.BATCH);
 
     private final String tableName;
     private final List<String> paramFields;
+    private final ReportMode defaultReportMode;
 
     // Static map for quick lookup by table name
     private static final Map<String, EventTableConfig> TABLE_MAP = new HashMap<>();
+
+    // Runtime report mode overrides (from configuration file)
+    private static final Map<String, ReportMode> REPORT_MODE_OVERRIDES = new HashMap<>();
 
     static {
         for (EventTableConfig config : values()) {
@@ -36,9 +42,10 @@ public enum EventTableConfig {
         }
     }
 
-    EventTableConfig(String tableName, List<String> paramFields) {
+    EventTableConfig(String tableName, List<String> paramFields, ReportMode defaultReportMode) {
         this.tableName = tableName;
         this.paramFields = paramFields;
+        this.defaultReportMode = defaultReportMode;
     }
 
     public String getTableName() {
@@ -47,6 +54,38 @@ public enum EventTableConfig {
 
     public List<String> getParamFields() {
         return paramFields;
+    }
+
+    /**
+     * Get report mode for this table
+     * Returns override value if set, otherwise returns default
+     */
+    public ReportMode getReportMode() {
+        ReportMode override = REPORT_MODE_OVERRIDES.get(tableName);
+        return override != null ? override : defaultReportMode;
+    }
+
+    /**
+     * Get default report mode (without overrides)
+     */
+    public ReportMode getDefaultReportMode() {
+        return defaultReportMode;
+    }
+
+    /**
+     * Set report mode override for a table
+     */
+    public static void setReportModeOverride(String tableName, ReportMode mode) {
+        if (TABLE_MAP.containsKey(tableName)) {
+            REPORT_MODE_OVERRIDES.put(tableName, mode);
+        }
+    }
+
+    /**
+     * Clear all report mode overrides
+     */
+    public static void clearReportModeOverrides() {
+        REPORT_MODE_OVERRIDES.clear();
     }
 
     /**

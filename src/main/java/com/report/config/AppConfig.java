@@ -117,6 +117,30 @@ public class AppConfig {
         // Event tables
         String tables = getProperty("event.tables", "page_vidw,element_click,pay,pay_result,user_info");
         eventTables = tables.split(",");
+
+        // Load report mode overrides for each table
+        loadReportModeOverrides();
+    }
+
+    /**
+     * Load report mode overrides from configuration
+     * Format: report.mode.{table_name}=SINGLE|BATCH
+     * Example: report.mode.pay=SINGLE
+     */
+    private void loadReportModeOverrides() {
+        // Clear existing overrides
+        EventTableConfig.clearReportModeOverrides();
+
+        // Load overrides from properties
+        for (String tableName : eventTables) {
+            String key = "report.mode." + tableName;
+            String modeValue = getProperty(key);
+            if (modeValue != null && !modeValue.trim().isEmpty()) {
+                ReportMode mode = ReportMode.fromString(modeValue);
+                EventTableConfig.setReportModeOverride(tableName, mode);
+                logger.info("Report mode override for table '{}': {}", tableName, mode);
+            }
+        }
     }
 
     private String getProperty(String key) {

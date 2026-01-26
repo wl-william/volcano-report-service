@@ -1,6 +1,8 @@
 package com.report.service;
 
 import com.report.config.AppConfig;
+import com.report.config.EventTableConfig;
+import com.report.config.ReportMode;
 import com.report.model.ReportPayload;
 import com.report.model.ReportResult;
 import com.report.repository.EventDataRepository;
@@ -92,6 +94,11 @@ public class ReportService {
             return new TableResult(0, 0, 0);
         }
 
+        // Get report mode for this table
+        EventTableConfig tableConfig = EventTableConfig.getByTableName(tableName);
+        ReportMode reportMode = tableConfig != null ? tableConfig.getReportMode() : ReportMode.BATCH;
+        logger.info("Table {} using report mode: {}", tableName, reportMode);
+
         int successCount = 0;
         int failCount = 0;
         int offset = 0;
@@ -105,17 +112,25 @@ public class ReportService {
                 break;
             }
 
-            logger.info("Processing batch: table={}, dt={}, offset={}, size={}",
-                    tableName, dt, offset, records.size());
+            logger.info("Processing batch: table={}, dt={}, offset={}, size={}, mode={}",
+                    tableName, dt, offset, records.size(), reportMode);
 
-            // Process each record with retry
-            for (Map<String, Object> record : records) {
-                boolean success = processRecordWithRetry(tableName, dt, record);
-                if (success) {
-                    successCount++;
-                } else {
-                    failCount++;
+            // Process records based on report mode
+            if (reportMode == ReportMode.SINGLE) {
+                // Single mode: report one by one
+                for (Map<String, Object> record : records) {
+                    boolean success = processRecordWithRetry(tableName, dt, record);
+                    if (success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                    }
                 }
+            } else {
+                // Batch mode: report in batches
+                BatchResult batchResult = processBatchRecords(tableName, dt, records);
+                successCount += batchResult.successCount;
+                failCount += batchResult.failCount;
             }
 
             offset += records.size();
@@ -123,6 +138,96 @@ public class ReportService {
         }
 
         return new TableResult((int) totalCount, successCount, failCount);
+    }
+
+    /**
+     * Process records in batch mode
+     * Splits records into smaller batches (up to 20) and reports with retry
+     *
+     * @param tableName Table name
+     * @param dt        Date partition
+     * @param records   List of records to process
+     * @return BatchResult with success and fail counts
+     */
+    private BatchResult processBatchRecords(String tableName, String dt, List<Map<String, Object>> records) {
+        int successCount = 0;
+        int failCount = 0;
+        int reportBatchSize = config.getReportBatchSize(); // typically 20
+
+        // Transform all records first
+        List<ReportPayload> allPayloads = new ArrayList<>();
+        for (Map<String, Object> record : records) {
+            try {
+                ReportPayload payload = transformService.transform(tableName, record);
+                allPayloads.add(payload);
+            } catch (Exception e) {
+                logger.error("Failed to transform record from table {}: {}", tableName, e.getMessage());
+                logFailedRecord(tableName, dt, record, "Transform failed: " + e.getMessage());
+                failCount++;
+            }
+        }
+
+        // Split into smaller batches and report
+        for (int i = 0; i < allPayloads.size(); i += reportBatchSize) {
+            int end = Math.min(i + reportBatchSize, allPayloads.size());
+            List<ReportPayload> batch = allPayloads.subList(i, end);
+
+            // Retry batch report
+            for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                try {
+                    ReportResult result = reportBatch(batch);
+
+                    if (result.isSuccess()) {
+                        successCount += batch.size();
+                        if (attempt > 1) {
+                            logger.info("Batch reported successfully on attempt {}: table={}, size={}",
+                                    attempt, tableName, batch.size());
+                        }
+                        break; // success, move to next batch
+                    }
+
+                    logger.warn("Batch report attempt {} failed for table {}: {}",
+                            attempt, tableName, result.getErrorMessage());
+
+                    // Last attempt failed
+                    if (attempt == MAX_RETRIES) {
+                        failCount += batch.size();
+                        // Log all records in the failed batch
+                        for (ReportPayload payload : batch) {
+                            Map<String, Object> originalRecord = records.get(allPayloads.indexOf(payload));
+                            logFailedRecord(tableName, dt, originalRecord,
+                                    "Batch report failed: " + result.getErrorMessage());
+                        }
+                    } else {
+                        // Wait before retry
+                        Thread.sleep(RETRY_DELAY_MS);
+                    }
+
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    logger.error("Batch report retry interrupted for table {}", tableName);
+                    failCount += batch.size();
+                    break;
+                } catch (Exception e) {
+                    logger.error("Unexpected error on batch report attempt {} for table {}: {}",
+                            attempt, tableName, e.getMessage());
+
+                    if (attempt == MAX_RETRIES) {
+                        failCount += batch.size();
+                    } else {
+                        try {
+                            Thread.sleep(RETRY_DELAY_MS);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            failCount += batch.size();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return new BatchResult(successCount, failCount);
     }
 
     /**
@@ -278,6 +383,19 @@ public class ReportService {
 
         TableResult(int totalRecords, int successCount, int failCount) {
             this.totalRecords = totalRecords;
+            this.successCount = successCount;
+            this.failCount = failCount;
+        }
+    }
+
+    /**
+     * Result of batch processing
+     */
+    private static class BatchResult {
+        final int successCount;
+        final int failCount;
+
+        BatchResult(int successCount, int failCount) {
             this.successCount = successCount;
             this.failCount = failCount;
         }

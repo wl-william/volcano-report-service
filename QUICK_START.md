@@ -120,12 +120,25 @@ db.username=your_username
 db.password=your_password
 
 volcano.api.appKey=your_api_key
+
+# 可选：配置上报模式（SINGLE=单条上报, BATCH=批量上报）
+# 支付类关键数据建议使用SINGLE模式
+report.mode.pay=SINGLE
+report.mode.pay_result=SINGLE
+# 高流量数据建议使用BATCH模式
+report.mode.page_vidw=BATCH
+report.mode.element_click=BATCH
 ```
 
 修改后重新打包:
 ```bash
 mvn clean package -DskipTests
 ```
+
+**💡 上报模式说明**:
+- **SINGLE模式**: 单条上报，可靠性高，适合关键业务数据
+- **BATCH模式**: 批量上报，速度快，适合高流量数据
+- 详细说明请参考: [docs/REPORT_MODE.md](docs/REPORT_MODE.md)
 
 ---
 
