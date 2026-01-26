@@ -2,6 +2,8 @@ package com.report.util;
 
 import com.report.config.AppConfig;
 import com.report.model.ReportResult;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import org.apache.http.HttpEntity;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
@@ -16,6 +18,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 
 /**
  * HTTP client utility for Volcano Engine API
@@ -25,6 +28,7 @@ public class HttpClientUtil {
     private static HttpClientUtil instance;
     private final CloseableHttpClient httpClient;
     private final AppConfig config;
+    private final CircuitBreaker circuitBreaker;
 
     private static final String CONTENT_TYPE = "application/json";
     private static final String HEADER_APP_KEY = "X-MCS-AppKey";
@@ -49,7 +53,17 @@ public class HttpClientUtil {
                 .setDefaultRequestConfig(requestConfig)
                 .build();
 
-        logger.info("HttpClient initialized with connection pool");
+        // Circuit breaker configuration
+        CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
+                .failureRateThreshold(50) // Open circuit if 50% of calls fail
+                .waitDurationInOpenState(Duration.ofSeconds(30)) // Wait 30s before trying again
+                .slidingWindowSize(10) // Consider last 10 calls
+                .minimumNumberOfCalls(5) // Need at least 5 calls before calculating rate
+                .build();
+
+        this.circuitBreaker = CircuitBreaker.of("volcanoApi", cbConfig);
+
+        logger.info("HttpClient initialized with connection pool and circuit breaker");
     }
 
     public static synchronized HttpClientUtil getInstance() {
@@ -60,13 +74,29 @@ public class HttpClientUtil {
     }
 
     /**
-     * Send POST request to Volcano Engine API
+     * Send POST request to Volcano Engine API with circuit breaker protection
      *
      * @param endpoint API endpoint (e.g., /v2/event/json or /v2/event/list)
      * @param jsonBody JSON request body
      * @return ReportResult
      */
     public ReportResult post(String endpoint, String jsonBody) {
+        try {
+            return circuitBreaker.executeSupplier(() -> doPost(endpoint, jsonBody));
+        } catch (Exception e) {
+            logger.error("Circuit breaker caught exception: {}", e.getMessage(), e);
+            return ReportResult.failure(0, "Circuit breaker: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Internal POST request implementation
+     *
+     * @param endpoint API endpoint
+     * @param jsonBody JSON request body
+     * @return ReportResult
+     */
+    private ReportResult doPost(String endpoint, String jsonBody) {
         String url = config.getApiBaseUrl() + endpoint;
         HttpPost httpPost = new HttpPost(url);
 
@@ -78,9 +108,11 @@ public class HttpClientUtil {
         httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8));
 
         logger.debug("Sending POST request to: {}", url);
-        logger.debug("Request body: {}", jsonBody);
+        logger.debug("Request body: {}", LogSanitizer.sanitizeJson(jsonBody));
 
-        try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+        CloseableHttpResponse response = null;
+        try {
+            response = httpClient.execute(httpPost);
             int statusCode = response.getStatusLine().getStatusCode();
             HttpEntity entity = response.getEntity();
             String responseBody = entity != null ? EntityUtils.toString(entity, StandardCharsets.UTF_8) : "";
@@ -103,20 +135,31 @@ public class HttpClientUtil {
                     }
                     result.setSuccess(true);
                 } catch (Exception e) {
-                    logger.warn("Failed to parse response body, treating as success: {}", responseBody);
+                    logger.warn("Failed to parse response body, treating as success");
                     result.setSuccess(true);
                 }
             } else {
                 result.setSuccess(false);
                 result.setErrorMessage("HTTP " + statusCode + ": " + responseBody);
-                logger.error("API request failed: status={}, response={}", statusCode, responseBody);
+                logger.error("API request failed: status={}", statusCode);
             }
 
+            // Ensure entity is fully consumed to release connection
+            EntityUtils.consume(entity);
             return result;
 
         } catch (IOException e) {
             logger.error("HTTP request failed: {}", e.getMessage(), e);
             return ReportResult.failure(0, "Connection error: " + e.getMessage());
+        } finally {
+            // Ensure response is closed
+            if (response != null) {
+                try {
+                    response.close();
+                } catch (IOException e) {
+                    logger.warn("Failed to close HTTP response", e);
+                }
+            }
         }
     }
 

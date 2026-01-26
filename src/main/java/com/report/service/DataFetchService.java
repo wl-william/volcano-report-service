@@ -2,6 +2,7 @@ package com.report.service;
 
 import com.report.config.AppConfig;
 import com.report.config.EventTableConfig;
+import com.report.model.ReportStatus;
 import com.report.repository.EventDataRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,7 +105,7 @@ public class DataFetchService {
      * Mark records as failed with error message
      */
     public void markAsFailed(String tableName, Long id, String errorMsg) {
-        eventDataRepository.updateStatusWithError(tableName, id, 3, errorMsg);
+        eventDataRepository.updateStatusWithError(tableName, id, ReportStatus.FAILED.getCode(), errorMsg);
     }
 
     /**

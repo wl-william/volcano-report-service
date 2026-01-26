@@ -16,13 +16,13 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <jackson.version>2.13.5</jackson.version>
+        <jackson.version>2.17.0</jackson.version>
         <httpclient.version>4.5.14</httpclient.version>
         <hikaricp.version>4.0.3</hikaricp.version>
         <mysql.version>8.0.33</mysql.version>
         <quartz.version>2.3.2</quartz.version>
         <slf4j.version>1.7.36</slf4j.version>
-        <logback.version>1.2.12</logback.version>
+        <logback.version>1.5.8</logback.version>
     </properties>
 
     <dependencies>
@@ -86,6 +86,20 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-core</artifactId>
             <version>${logback.version}</version>
+        </dependency>
+
+        <!-- Resilience4j Circuit Breaker -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
+        <!-- Micrometer Metrics -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>1.13.0</version>
         </dependency>
 
         <!-- Test -->

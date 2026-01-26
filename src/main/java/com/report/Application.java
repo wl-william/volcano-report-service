@@ -29,10 +29,10 @@ public class Application {
             AppConfig config = AppConfig.getInstance();
             logger.info("Configuration loaded");
 
-            // Test database connection
+            // Test database connection with retry
             DataSourceConfig dataSource = DataSourceConfig.getInstance();
-            if (!dataSource.isHealthy()) {
-                logger.error("Database connection failed!");
+            if (!testDatabaseConnectionWithRetry(dataSource, 3, 5000)) {
+                logger.error("Database connection failed after retries!");
                 System.exit(1);
             }
             logger.info("Database connection OK");
@@ -153,6 +153,36 @@ public class Application {
             cleanup();
             System.exit(1);
         }
+    }
+
+    /**
+     * Test database connection with retry logic
+     *
+     * @param dataSource DataSource to test
+     * @param maxAttempts Maximum number of retry attempts
+     * @param delayMs Delay between retries in milliseconds
+     * @return true if connection is successful, false otherwise
+     */
+    private static boolean testDatabaseConnectionWithRetry(DataSourceConfig dataSource,
+                                                           int maxAttempts,
+                                                           long delayMs) {
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            logger.info("Database connection attempt {}/{}", attempt, maxAttempts);
+            if (dataSource.isHealthy()) {
+                return true;
+            }
+            if (attempt < maxAttempts) {
+                logger.warn("Database connection failed, retrying in {}ms...", delayMs);
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    logger.error("Database connection retry interrupted");
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     /**

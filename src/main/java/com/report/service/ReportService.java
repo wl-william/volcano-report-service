@@ -7,6 +7,7 @@ import com.report.model.TaskProgress;
 import com.report.model.TaskProgress.TaskType;
 import com.report.util.HttpClientUtil;
 import com.report.util.JsonUtil;
+import com.report.util.LogSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -171,6 +172,8 @@ public class ReportService {
 
     /**
      * Report batch with retry
+     * Note: Uses synchronous retry with Thread.sleep for simplicity in batch processing context.
+     * For high-concurrency scenarios, consider using ScheduledExecutorService or reactive patterns.
      */
     private ReportResult reportBatchWithRetry(List<ReportPayload> payloads) {
         int maxRetries = config.getMaxRetryTimes();
@@ -187,9 +190,12 @@ public class ReportService {
                 logger.warn("Report attempt {} failed, retrying in {}ms: {}",
                         attempt, retryInterval, result.getErrorMessage());
                 try {
+                    // Synchronous sleep is acceptable here as this is batch processing
+                    // and we want to avoid overwhelming the API with rapid retries
                     Thread.sleep(retryInterval);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    logger.warn("Retry interrupted, returning last result");
                     return result;
                 }
             }
@@ -207,9 +213,11 @@ public class ReportService {
             Long recordId = payload.getRecordId();
             dataFetchService.markAsFailed(tableName, recordId, errorMessage);
 
-            // Log to failed records file
+            // Log to failed records file (sanitize user ID for privacy)
             failedLogger.info("table={}, id={}, user={}, error={}",
-                    tableName, recordId, payload.getUser().getUserUniqueId(), errorMessage);
+                    tableName, recordId,
+                    LogSanitizer.sanitizeUserId(payload.getUser().getUserUniqueId()),
+                    errorMessage);
         }
     }
 

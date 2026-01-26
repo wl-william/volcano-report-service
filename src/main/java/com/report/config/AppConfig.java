@@ -1,10 +1,14 @@
 package com.report.config;
 
+import org.quartz.CronExpression;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 
 /**
@@ -70,7 +74,8 @@ public class AppConfig {
             }
             properties.load(input);
             parseConfig();
-            logger.info("Configuration loaded successfully");
+            validateConfig();
+            logger.info("Configuration loaded and validated successfully");
         } catch (IOException e) {
             logger.error("Error loading configuration", e);
             throw new RuntimeException("Failed to load configuration", e);
@@ -183,4 +188,103 @@ public class AppConfig {
     public String getRetryCron() { return retryCron; }
 
     public String[] getEventTables() { return eventTables; }
+
+    /**
+     * Validate configuration values
+     * Throws RuntimeException if validation fails
+     */
+    private void validateConfig() {
+        List<String> errors = new ArrayList<>();
+
+        // Validate URLs
+        if (!isValidUrl(apiBaseUrl)) {
+            errors.add("Invalid volcano.api.baseUrl: " + apiBaseUrl);
+        }
+        if (!isValidJdbcUrl(dbUrl)) {
+            errors.add("Invalid db.url: " + dbUrl);
+        }
+
+        // Validate cron expressions
+        if (!isValidCronExpression(incrementCron)) {
+            errors.add("Invalid schedule.increment.cron: " + incrementCron);
+        }
+        if (!isValidCronExpression(retryCron)) {
+            errors.add("Invalid schedule.retry.cron: " + retryCron);
+        }
+
+        // Validate numeric ranges
+        if (dbPoolSize < 1 || dbPoolSize > 100) {
+            errors.add("db.pool.size must be between 1 and 100, got: " + dbPoolSize);
+        }
+        if (dbPoolMinIdle < 0 || dbPoolMinIdle > dbPoolSize) {
+            errors.add("db.pool.minIdle must be between 0 and db.pool.size, got: " + dbPoolMinIdle);
+        }
+        if (reportBatchSize < 1 || reportBatchSize > 50) {
+            errors.add("batch.report.size must be between 1 and 50, got: " + reportBatchSize);
+        }
+        if (dbBatchSize < 1 || dbBatchSize > 10000) {
+            errors.add("batch.db.size must be between 1 and 10000, got: " + dbBatchSize);
+        }
+        if (maxRetryTimes < 0 || maxRetryTimes > 10) {
+            errors.add("retry.max.times must be between 0 and 10, got: " + maxRetryTimes);
+        }
+
+        // Validate timeouts
+        if (httpConnectTimeout < 0) {
+            errors.add("http.connect.timeout must be positive, got: " + httpConnectTimeout);
+        }
+        if (httpSocketTimeout < 0) {
+            errors.add("http.socket.timeout must be positive, got: " + httpSocketTimeout);
+        }
+
+        // Validate API key is not placeholder
+        if (appKey == null || appKey.trim().isEmpty() || "your_app_key".equals(appKey)) {
+            logger.warn("volcano.api.appKey appears to be a placeholder value");
+        }
+
+        if (!errors.isEmpty()) {
+            logger.error("Configuration validation failed with {} error(s):", errors.size());
+            errors.forEach(logger::error);
+            throw new RuntimeException("Invalid configuration: " + errors.size() + " error(s) found");
+        }
+
+        logger.info("Configuration validation passed");
+    }
+
+    /**
+     * Validate URL format
+     */
+    private boolean isValidUrl(String url) {
+        if (url == null || url.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            new URL(url);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Validate JDBC URL format
+     */
+    private boolean isValidJdbcUrl(String url) {
+        return url != null && url.startsWith("jdbc:");
+    }
+
+    /**
+     * Validate cron expression
+     */
+    private boolean isValidCronExpression(String cron) {
+        if (cron == null || cron.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            new CronExpression(cron);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
 }

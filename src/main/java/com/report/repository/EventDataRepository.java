@@ -2,6 +2,7 @@ package com.report.repository;
 
 import com.report.config.DataSourceConfig;
 import com.report.config.EventTableConfig;
+import com.report.model.ReportStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -177,28 +178,28 @@ public class EventDataRepository {
     }
 
     /**
-     * Mark records as processing (status = 1)
+     * Mark records as processing
      */
     public void markAsProcessing(String tableName, List<Long> ids) {
-        updateStatus(tableName, ids, 1);
+        updateStatus(tableName, ids, ReportStatus.PROCESSING.getCode());
     }
 
     /**
-     * Mark records as success (status = 2)
+     * Mark records as success
      */
     public void markAsSuccess(String tableName, List<Long> ids) {
-        updateStatus(tableName, ids, 2);
+        updateStatus(tableName, ids, ReportStatus.SUCCESS.getCode());
     }
 
     /**
-     * Mark records as failed (status = 3)
+     * Mark records as failed
      */
     public void markAsFailed(String tableName, List<Long> ids) {
-        updateStatus(tableName, ids, 3);
+        updateStatus(tableName, ids, ReportStatus.FAILED.getCode());
     }
 
     /**
-     * Get records that need retry (status = 3 and retry_count < max)
+     * Get records that need retry (status = FAILED and retry_count < max)
      */
     public List<Map<String, Object>> fetchFailedRecords(String tableName, int maxRetryCount, int limit) {
         EventTableConfig tableConfig = EventTableConfig.getByTableName(tableName);
@@ -207,9 +208,10 @@ public class EventDataRepository {
         }
 
         String sql = String.format(
-                "SELECT %s FROM %s WHERE report_status = 3 AND retry_count < ? ORDER BY id LIMIT ?",
+                "SELECT %s FROM %s WHERE report_status = %d AND retry_count < ? ORDER BY id LIMIT ?",
                 tableConfig.buildSelectFields(),
-                tableName
+                tableName,
+                ReportStatus.FAILED.getCode()
         );
 
         List<Map<String, Object>> records = new ArrayList<>();
