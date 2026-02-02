@@ -32,9 +32,8 @@ public class DataTransformService {
 
         ReportPayload payload = new ReportPayload();
 
-        // Set record ID and table name for tracking
-        Long recordId = getLongValue(record, "id");
-        payload.setRecordId(recordId);
+        // Set table name for tracking (Hive tables don't have record ID)
+        payload.setRecordId(null);
         payload.setTableName(tableName);
 
         // Build user
@@ -44,14 +43,11 @@ public class DataTransformService {
 
         // Build event
         ReportEvent event = new ReportEvent();
-        event.setEvent(tableName);  // Table name as event name
+        event.setEvent(tableConfig.getEventName());  // Use event name from config (e.g., "__profile_set" for user_info)
         event.setParams(buildParamsJson(tableConfig, record));
-        event.setLocalTimeMs(getLongValue(record, "event_time"));
 
-        // If event_time is null, use current time
-        if (event.getLocalTimeMs() == null) {
-            event.setLocalTimeMs(System.currentTimeMillis());
-        }
+        // Hive tables don't have event_time field, use current time
+        event.setLocalTimeMs(System.currentTimeMillis());
 
         payload.addEvent(event);
 
