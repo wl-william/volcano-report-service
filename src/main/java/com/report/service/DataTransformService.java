@@ -46,8 +46,13 @@ public class DataTransformService {
         event.setEvent(tableConfig.getEventName());  // Use event name from config (e.g., "__profile_set" for user_info)
         event.setParams(buildParamsJson(tableConfig, record));
 
-        // Hive tables don't have event_time field, use current time
-        event.setLocalTimeMs(System.currentTimeMillis());
+        // Use 'et' field as event time if table has it, otherwise use current time
+        if (tableConfig.hasEtField()) {
+            Long etValue = getLongValue(record, "et");
+            event.setLocalTimeMs(etValue != null ? etValue : System.currentTimeMillis());
+        } else {
+            event.setLocalTimeMs(System.currentTimeMillis());
+        }
 
         payload.addEvent(event);
 
@@ -77,10 +82,17 @@ public class DataTransformService {
 
     /**
      * Build params JSON string from record fields
+     * Adds report_type parameter for certain tables
      */
     private String buildParamsJson(EventTableConfig tableConfig, Map<String, Object> record) {
         Map<String, Object> params = new LinkedHashMap<>();
 
+        // Add report_type parameter if table requires it
+        if (tableConfig.needsReportType()) {
+            params.put("report_type", "poc_v1");
+        }
+
+        // Add all param fields from record
         for (String field : tableConfig.getParamFields()) {
             Object value = record.get(field);
             if (value != null) {
